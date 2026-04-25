@@ -1,0 +1,8 @@
+[mod]
+name="RTV Tool Kit"
+id="rtv_tool_kit"
+version="1.0.0"
+priority=20
+
+[autoload]
+RTVToolKit="res://RTVToolKit/Main.gd"
