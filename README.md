@@ -3,7 +3,7 @@
  
 ## READ Documentation AND LICENSE
 - [Changelog](CHANGELOG.md)
-- [License](LICENSE)
+- [License](LICENSE.txt)
 
 ## MWS PAGE https://modworkshop.net/mod/56362
    
