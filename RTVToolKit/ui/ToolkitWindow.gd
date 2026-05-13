@@ -9,18 +9,21 @@ const DIAGNOSTICS_REPORT_PATH := "user://rtv_tool_kit_diagnostics.txt"
 const SNAPSHOT_ROOT := "user://rtv_tool_kit_snapshots"
 const TOGGLE_KEY := KEY_F8
 const REFRESH_KEY := KEY_F9
+const PALETTE_KEY := KEY_P
 const TAB_OVERVIEW := 0
 const TAB_HIERARCHY := 1
 const TAB_SEARCH := 2
 const TAB_INSPECTOR := 3
 const TAB_PREVIEW := 4
-const TAB_WORLD := 5
-const TAB_FILES := 6
-const TAB_RUNTIME := 7
-const TAB_DIAGNOSTICS := 8
-const TAB_GROUPS := 9
-const TAB_WATCH := 10
-const TAB_LOG := 11
+const TAB_RESOURCES := 5
+const TAB_WORLD := 6
+const TAB_FILES := 7
+const TAB_RUNTIME := 8
+const TAB_ERRORS := 9
+const TAB_DIAGNOSTICS := 10
+const TAB_GROUPS := 11
+const TAB_WATCH := 12
+const TAB_LOG := 13
 const MAX_LOG_LINES := 240
 const MAX_TRANSACTIONS := 160
 const MAX_INSPECTOR_PROPERTIES := 260
@@ -30,6 +33,9 @@ const QUICK_GROUPS := ["Furniture", "Item", "Switch"]
 const ToolkitConfig = preload("res://RTVToolKit/core/ToolkitConfig.gd")
 const ToolkitDiagnostics = preload("res://RTVToolKit/core/ToolkitDiagnostics.gd")
 const ToolkitPicker = preload("res://RTVToolKit/core/ToolkitPicker.gd")
+const ToolkitResourceBrowser = preload("res://RTVToolKit/core/ToolkitResourceBrowser.gd")
+const ToolkitRuntimeErrors = preload("res://RTVToolKit/core/ToolkitRuntimeErrors.gd")
+const TransformGizmoOverlay = preload("res://RTVToolKit/ui/TransformGizmoOverlay.gd")
 const WindowChrome = preload("res://RTVToolKit/ui/WindowChrome.gd")
 const ToolkitTabBuilder = preload("res://RTVToolKit/ui/ToolkitTabBuilder.gd")
 const ToolkitTheme = preload("res://RTVToolKit/ui/ToolkitTheme.gd")
@@ -41,15 +47,20 @@ var _pick_hint_panel: PanelContainer
 var _pick_hint_label: Label
 var _pick_ui_highlight: PanelContainer
 var _pick_world_marker: PanelContainer
+var _gizmo_overlay: TransformGizmoOverlay
 var _backdrop: ColorRect
 var _panel: WindowChrome
 var _tabs: TabContainer
 var _status_label: Label
+var _command_palette_panel: PanelContainer
+var _command_palette_edit: LineEdit
+var _command_palette_results: ItemList
 
 var _overview_label: RichTextLabel
 
 var _hierarchy_tree: Tree
 var _hierarchy_path_label: Label
+var _hierarchy_breadcrumbs: HFlowContainer
 var _hierarchy_filter_edit: LineEdit
 var _pick_toggle_button: Button
 var _pick_script_owner_button: Button
@@ -64,6 +75,7 @@ var _search_selected_scope_check: CheckBox
 var _search_results: ItemList
 
 var _inspector_path_edit: LineEdit
+var _inspector_breadcrumbs: HFlowContainer
 var _inspector_meta: RichTextLabel
 var _inspector_watch_view: RichTextLabel
 var _resource_meta: RichTextLabel
@@ -90,6 +102,10 @@ var _preview_floor_check: CheckBox
 var _preview_axes_check: CheckBox
 var _preview_spin_check: CheckBox
 var _preview_viewport: Control
+var _resource_filter_edit: LineEdit
+var _resource_type_filter: OptionButton
+var _resource_list: ItemList
+var _resource_detail: RichTextLabel
 var _undo_button: Button
 var _redo_button: Button
 var _auto_snapshot_danger_check: CheckBox
@@ -112,6 +128,9 @@ var _world_scale_x: SpinBox
 var _world_scale_y: SpinBox
 var _world_scale_z: SpinBox
 var _spawn_path_edit: LineEdit
+var _gizmo_toggle_button: Button
+var _gizmo_mode_option: OptionButton
+var _gizmo_local_check: CheckBox
 
 var _file_list: ItemList
 var _file_meta_label: Label
@@ -133,6 +152,10 @@ var _game_tutorial_check: CheckBox
 var _game_freeze_check: CheckBox
 var _game_compatibility_check: CheckBox
 var _runtime_message_edit: LineEdit
+var _error_filter_edit: LineEdit
+var _error_list: ItemList
+var _error_report: RichTextLabel
+var _error_detail: RichTextLabel
 
 var _diagnostics_mod_list: ItemList
 var _diagnostics_issue_list: ItemList
@@ -167,6 +190,10 @@ var _redo_stack: Array[Dictionary] = []
 var _transaction_history: Array[Dictionary] = []
 var _pinned_properties: Array[String] = []
 var _watched_properties: Array[String] = []
+var _resource_entries: Array[Dictionary] = []
+var _error_entries: Array[Dictionary] = []
+var _palette_entries: Array[Dictionary] = []
+var _palette_filtered_entries: Array[Dictionary] = []
 var _inspector_selected_property := ""
 var _inspector_selected_property_type := TYPE_NIL
 var _inspector_baseline_values := {}
@@ -176,6 +203,8 @@ var _diagnostics_focus_kind := ""
 var _diagnostics_focus_key := ""
 var _transaction_serial := 1
 var _pending_confirmation := {}
+var _selected_resource_path := ""
+var _selected_error_id := ""
 
 var _refresh_accumulator := 0.0
 var _last_scene_signature := ""
@@ -185,6 +214,9 @@ var _window_position := ToolkitConfig.DEFAULT_WINDOW_POSITION
 var _window_size := ToolkitConfig.DEFAULT_WINDOW_SIZE
 var _pick_enabled := false
 var _pick_hover_path := ""
+var _resource_index_built := false
+var _command_palette_open := false
+var _gizmo_enabled := false
 
 
 func _ready() -> void:
@@ -205,7 +237,7 @@ func _ready() -> void:
 	_refresh_all_views(false)
 	_refresh_transaction_views()
 	_log_event("Tool Kit ready.")
-	_set_status("Ready. F8 toggles the overlay. F9 refreshes.")
+	_set_status("Ready. F8 toggles the overlay. F9 refreshes. Ctrl+P opens the palette.")
 
 
 func _process(delta: float) -> void:
@@ -221,6 +253,12 @@ func _process(delta: float) -> void:
 
 	if _pick_enabled:
 		_process_pick_mode()
+
+	if _gizmo_enabled and _gizmo_overlay != null:
+		_gizmo_overlay.set_target(_get_selected_node())
+		if not (_get_selected_node() is Node3D):
+			_set_gizmo_enabled(false, true)
+			_set_status("Transform gizmo requires a Node3D selection.")
 
 	if not _panel.visible:
 		return
@@ -240,23 +278,52 @@ func _input(event: InputEvent) -> void:
 	if not event.pressed or event.echo:
 		return
 
+	var key_event := event as InputEventKey
+
+	if _command_palette_open:
+		if key_event.keycode == KEY_ESCAPE:
+			_set_command_palette_open(false)
+			return
+		if key_event.keycode == KEY_DOWN:
+			_move_command_palette_selection(1)
+			return
+		if key_event.keycode == KEY_UP:
+			_move_command_palette_selection(-1)
+			return
+		if key_event.keycode == KEY_ENTER or key_event.keycode == KEY_KP_ENTER:
+			_activate_command_palette_selection()
+			return
+
+	if _gizmo_enabled:
+		if key_event.keycode == KEY_ESCAPE:
+			_set_gizmo_enabled(false, true)
+			_set_status("Transform gizmo closed.")
+			return
+		if key_event.keycode == TOGGLE_KEY:
+			_set_gizmo_enabled(false, true)
+			return
+
 	if _pick_enabled:
-		if event.keycode == KEY_ESCAPE:
+		if key_event.keycode == KEY_ESCAPE:
 			_set_pick_mode(false, true)
 			_set_status("Pick mode cancelled.")
 			return
-		if event.keycode == KEY_SPACE and _pick_freeze_check != null:
+		if key_event.keycode == KEY_SPACE and _pick_freeze_check != null:
 			_pick_freeze_check.button_pressed = not _pick_freeze_check.button_pressed
 			_refresh_pick_controls()
 			_set_status("Pick freeze = %s." % _bool_string(_pick_freeze_check.button_pressed))
 			return
-		if event.keycode == TOGGLE_KEY:
+		if key_event.keycode == TOGGLE_KEY:
 			_set_pick_mode(false, true)
 			return
 
-	if event.keycode == TOGGLE_KEY:
+	if key_event.ctrl_pressed and key_event.keycode == PALETTE_KEY and _panel.visible:
+		_set_command_palette_open(not _command_palette_open)
+		return
+
+	if key_event.keycode == TOGGLE_KEY:
 		_toggle_overlay()
-	elif event.keycode == REFRESH_KEY:
+	elif key_event.keycode == REFRESH_KEY:
 		_refresh_all_views(true)
 		_set_status("Refreshed all toolkit views.")
 
@@ -310,6 +377,12 @@ func _build_ui() -> void:
 	_pick_hint_label.text = "Pick mode active. Left click selects. Right click or Esc cancels. Space toggles freeze."
 	pick_hint_margin.add_child(_pick_hint_label)
 
+	_gizmo_overlay = TransformGizmoOverlay.new()
+	_gizmo_overlay.visible = false
+	_gizmo_overlay.status_changed.connect(_on_gizmo_status_changed)
+	_gizmo_overlay.transform_committed.connect(_on_gizmo_transform_committed)
+	add_child(_gizmo_overlay)
+
 	_backdrop = ColorRect.new()
 	_backdrop.anchor_right = 1.0
 	_backdrop.anchor_bottom = 1.0
@@ -338,6 +411,7 @@ func _build_ui() -> void:
 	_tabs = TabContainer.new()
 	_tabs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_tabs.tab_changed.connect(_on_tab_changed)
 	root_vbox.add_child(_tabs)
 
 	ToolkitTabBuilder.build_tabs(self, _tabs)
@@ -380,7 +454,360 @@ func _build_ui() -> void:
 	drag_hint.modulate = Color(1.0, 1.0, 1.0, 0.42)
 	status_row.add_child(drag_hint)
 
+	_build_command_palette()
 	_refresh_pick_controls()
+	_refresh_gizmo_controls()
+
+
+func _build_command_palette() -> void:
+	_command_palette_panel = PanelContainer.new()
+	_command_palette_panel.visible = false
+	_command_palette_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	_command_palette_panel.theme = ToolkitTheme.load_game_theme()
+	_command_palette_panel.add_theme_stylebox_override("panel", ToolkitTheme.make_hint_style())
+	_command_palette_panel.anchor_left = 0.5
+	_command_palette_panel.anchor_right = 0.5
+	_command_palette_panel.anchor_top = 0.5
+	_command_palette_panel.anchor_bottom = 0.5
+	_command_palette_panel.offset_left = -380.0
+	_command_palette_panel.offset_right = 380.0
+	_command_palette_panel.offset_top = -220.0
+	_command_palette_panel.offset_bottom = 220.0
+	add_child(_command_palette_panel)
+
+	var margin := MarginContainer.new()
+	margin.add_theme_constant_override("margin_left", 14)
+	margin.add_theme_constant_override("margin_top", 14)
+	margin.add_theme_constant_override("margin_right", 14)
+	margin.add_theme_constant_override("margin_bottom", 14)
+	_command_palette_panel.add_child(margin)
+
+	var column := VBoxContainer.new()
+	column.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	column.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	column.add_theme_constant_override("separation", 10)
+	margin.add_child(column)
+
+	var title := Label.new()
+	title.text = "Command Palette"
+	title.modulate = Color(1.0, 1.0, 1.0, 0.82)
+	column.add_child(title)
+
+	_command_palette_edit = LineEdit.new()
+	_command_palette_edit.placeholder_text = "Search tabs, actions, nodes, groups, files, resources, and diagnostics..."
+	_command_palette_edit.text_changed.connect(_on_command_palette_text_changed)
+	column.add_child(_command_palette_edit)
+
+	_command_palette_results = ItemList.new()
+	_command_palette_results.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_command_palette_results.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_command_palette_results.item_activated.connect(_on_command_palette_item_activated)
+	_command_palette_results.item_selected.connect(_on_command_palette_item_selected)
+	column.add_child(_command_palette_results)
+
+
+func _on_tab_changed(tab_index: int) -> void:
+	if tab_index == TAB_RESOURCES:
+		_refresh_resource_browser(false)
+	elif tab_index == TAB_ERRORS:
+		_refresh_error_panel()
+
+
+func _set_command_palette_open(enabled: bool) -> void:
+	_command_palette_open = enabled
+	if _command_palette_panel == null:
+		return
+	_command_palette_panel.visible = enabled
+	if enabled:
+		_command_palette_edit.text = ""
+		_refresh_command_palette_results()
+		_command_palette_edit.grab_focus()
+		_move_command_palette_selection(0)
+		_set_status("Command palette open.")
+	else:
+		_command_palette_edit.release_focus()
+		_set_status("Command palette closed.")
+
+
+func _on_command_palette_text_changed(_text: String) -> void:
+	_refresh_command_palette_results()
+
+
+func _refresh_command_palette_results() -> void:
+	if _command_palette_results == null:
+		return
+	_palette_filtered_entries = _build_command_palette_entries(_command_palette_edit.text.strip_edges())
+	_command_palette_results.clear()
+	for entry in _palette_filtered_entries:
+		var title := String(entry.get("title", ""))
+		var subtitle := String(entry.get("subtitle", ""))
+		var label := title if subtitle == "" else "%s\n%s" % [title, subtitle]
+		var index := _command_palette_results.get_item_count()
+		_command_palette_results.add_item(label)
+		_command_palette_results.set_item_metadata(index, title)
+	if _command_palette_results.get_item_count() > 0:
+		_command_palette_results.select(0)
+
+
+func _build_command_palette_entries(query: String) -> Array[Dictionary]:
+	var entries: Array[Dictionary] = []
+	var lower_query := query.to_lower()
+
+	if _tabs != null:
+		for tab_index in range(_tabs.get_tab_count()):
+			var title := _tabs.get_tab_title(tab_index)
+			entries.append({
+				"kind": "tab",
+				"title": "Open Tab: %s" % title,
+				"subtitle": "Jump to toolkit tab",
+				"search": "tab open %s" % title.to_lower(),
+				"value": tab_index,
+			})
+
+	var actions := [
+		{"id": "refresh_all", "title": "Action: Refresh All", "subtitle": "Refresh every toolkit panel"},
+		{"id": "open_inspector", "title": "Action: Open Inspector", "subtitle": "Jump to the inspector tab"},
+		{"id": "toggle_pick", "title": "Action: Toggle Pick Mode", "subtitle": "Select UI or world objects from the game view"},
+		{"id": "copy_selected_path", "title": "Action: Copy Selected Path", "subtitle": "Copy the current node path"},
+		{"id": "select_scene", "title": "Action: Select Scene Root", "subtitle": "Jump to the current scene root"},
+		{"id": "select_loader", "title": "Action: Select Loader", "subtitle": "Jump to /root/Loader"},
+		{"id": "snapshot_user", "title": "Action: Snapshot user://", "subtitle": "Create a user:// snapshot"},
+		{"id": "refresh_diagnostics", "title": "Action: Refresh Diagnostics", "subtitle": "Rebuild diagnostics and issue lists"},
+		{"id": "refresh_resources", "title": "Action: Refresh Resources", "subtitle": "Rebuild the res:// resource index"},
+		{"id": "refresh_errors", "title": "Action: Refresh Errors", "subtitle": "Re-read runtime logs"},
+	]
+	for action in actions:
+		entries.append({
+			"kind": "action",
+			"title": String(action.get("title", "")),
+			"subtitle": String(action.get("subtitle", "")),
+			"search": String(action.get("title", "")).to_lower() + " " + String(action.get("subtitle", "")).to_lower(),
+			"value": String(action.get("id", "")),
+		})
+
+	for path in _selection_history:
+		entries.append({
+			"kind": "path",
+			"title": "History: %s" % path,
+			"subtitle": "Selection history",
+			"search": path.to_lower(),
+			"value": path,
+		})
+	for path in _bookmarked_paths:
+		entries.append({
+			"kind": "path",
+			"title": "Bookmark: %s" % path,
+			"subtitle": "Saved node bookmark",
+			"search": path.to_lower(),
+			"value": path,
+		})
+	for path in _watch_paths:
+		entries.append({
+			"kind": "path",
+			"title": "Watch: %s" % path,
+			"subtitle": "Watched node",
+			"search": path.to_lower(),
+			"value": path,
+		})
+
+	var group_names := _collect_group_names()
+	for group_name in group_names:
+		entries.append({
+			"kind": "group",
+			"title": "Group: %s" % group_name,
+			"subtitle": "Open group membership view",
+			"search": group_name.to_lower(),
+			"value": group_name,
+		})
+
+	for entry in _file_entries:
+		var user_path := String(entry.get("user_path", ""))
+		var relative_path := String(entry.get("relative_path", ""))
+		entries.append({
+			"kind": "file",
+			"title": "File: %s" % relative_path,
+			"subtitle": user_path,
+			"search": "%s %s" % [relative_path.to_lower(), user_path.to_lower()],
+			"value": user_path,
+		})
+
+	for mod_data in _as_array(_diagnostics_data.get("loaded_mods", [])):
+		if not (mod_data is Dictionary):
+			continue
+		entries.append({
+			"kind": "diagnostic_mod",
+			"title": "Mod: %s" % String(mod_data.get("mod_name", "")),
+			"subtitle": "Focus diagnostics on this mod",
+			"search": String(mod_data.get("mod_name", "")).to_lower(),
+			"value": String(mod_data.get("mod_id", "")),
+		})
+	for issue in _as_array(_diagnostics_data.get("issues", [])):
+		if not (issue is Dictionary):
+			continue
+		entries.append({
+			"kind": "diagnostic_issue",
+			"title": "Issue: %s" % String(issue.get("title", "")),
+			"subtitle": String(issue.get("severity", "")).capitalize(),
+			"search": "%s %s" % [String(issue.get("title", "")).to_lower(), String(issue.get("summary", "")).to_lower()],
+			"value": String(issue.get("id", "")),
+		})
+
+	if lower_query.length() >= 2:
+		var node_count := 0
+		for node in _collect_all_nodes():
+			var node_path := _absolute_node_path(node)
+			var search := "%s %s %s" % [node.name.to_lower(), node.get_class().to_lower(), node_path.to_lower()]
+			if not search.contains(lower_query):
+				continue
+			entries.append({
+				"kind": "path",
+				"title": "Node: %s [%s]" % [node.name, node.get_class()],
+				"subtitle": node_path,
+				"search": search,
+				"value": node_path,
+			})
+			node_count += 1
+			if node_count >= 80:
+				break
+
+	if _resource_index_built and lower_query.length() >= 3:
+		var resource_count := 0
+		for entry in _resource_entries:
+			var resource_path := String(entry.get("path", ""))
+			if not resource_path.to_lower().contains(lower_query):
+				continue
+			entries.append({
+				"kind": "resource",
+				"title": "Resource: %s" % resource_path.get_file(),
+				"subtitle": resource_path,
+				"search": resource_path.to_lower(),
+				"value": resource_path,
+			})
+			resource_count += 1
+			if resource_count >= 60:
+				break
+
+	if lower_query == "":
+		return entries
+
+	var filtered: Array[Dictionary] = []
+	for entry in entries:
+		var search_text := "%s %s %s" % [
+			String(entry.get("search", "")),
+			String(entry.get("title", "")).to_lower(),
+			String(entry.get("subtitle", "")).to_lower(),
+		]
+		if search_text.contains(lower_query):
+			filtered.append(entry)
+	return filtered
+
+
+func _move_command_palette_selection(delta: int) -> void:
+	if _command_palette_results == null or _command_palette_results.get_item_count() == 0:
+		return
+	var selected := _command_palette_results.get_selected_items()
+	var index := 0 if selected.is_empty() else int(selected[0])
+	index = clamp(index + delta, 0, _command_palette_results.get_item_count() - 1)
+	_command_palette_results.select(index)
+	_command_palette_results.ensure_current_is_visible()
+
+
+func _activate_command_palette_selection() -> void:
+	if _command_palette_results == null:
+		return
+	var selected := _command_palette_results.get_selected_items()
+	if selected.is_empty():
+		return
+	_execute_command_palette_entry(int(selected[0]))
+
+
+func _on_command_palette_item_activated(index: int) -> void:
+	_execute_command_palette_entry(index)
+
+
+func _on_command_palette_item_selected(index: int) -> void:
+	if index < 0 or index >= _palette_filtered_entries.size():
+		return
+	var entry: Dictionary = _palette_filtered_entries[index]
+	_set_status(String(entry.get("title", "")))
+
+
+func _execute_command_palette_entry(index: int) -> void:
+	if index < 0 or index >= _palette_filtered_entries.size():
+		return
+	var entry: Dictionary = _palette_filtered_entries[index]
+	_set_command_palette_open(false)
+	match String(entry.get("kind", "")):
+		"tab":
+			_tabs.current_tab = int(entry.get("value", TAB_OVERVIEW))
+		"action":
+			_execute_palette_action(String(entry.get("value", "")))
+		"path":
+			_select_path(String(entry.get("value", "")))
+		"group":
+			_tabs.current_tab = TAB_GROUPS
+			_selected_group_name = String(entry.get("value", ""))
+			if _group_name_edit != null:
+				_group_name_edit.text = _selected_group_name
+			_refresh_groups_view()
+		"file":
+			_tabs.current_tab = TAB_FILES
+			_selected_user_file = String(entry.get("value", ""))
+			_refresh_file_preview()
+		"diagnostic_mod":
+			_tabs.current_tab = TAB_DIAGNOSTICS
+			_diagnostics_focus_kind = "mod"
+			_diagnostics_focus_key = String(entry.get("value", ""))
+			_refresh_diagnostics_detail()
+			_refresh_diagnostics_lists()
+		"diagnostic_issue":
+			_tabs.current_tab = TAB_DIAGNOSTICS
+			_diagnostics_focus_kind = "issue"
+			_diagnostics_focus_key = String(entry.get("value", ""))
+			_refresh_diagnostics_detail()
+			_refresh_diagnostics_lists()
+		"resource":
+			_tabs.current_tab = TAB_RESOURCES
+			_selected_resource_path = String(entry.get("value", ""))
+			_refresh_resource_browser(false)
+
+
+func _execute_palette_action(action_id: String) -> void:
+	match action_id:
+		"refresh_all":
+			_refresh_all_views(true)
+		"open_inspector":
+			_tabs.current_tab = TAB_INSPECTOR
+		"toggle_pick":
+			_set_pick_mode(not _pick_enabled)
+		"copy_selected_path":
+			_on_copy_selected_path_pressed()
+		"select_scene":
+			_on_select_scene_root_pressed()
+		"select_loader":
+			_on_select_loader_pressed()
+		"snapshot_user":
+			_on_snapshot_user_pressed()
+		"refresh_diagnostics":
+			_on_refresh_diagnostics_pressed()
+		"refresh_resources":
+			_on_refresh_resources_pressed()
+		"refresh_errors":
+			_on_refresh_errors_pressed()
+
+
+func _collect_group_names() -> Array[String]:
+	var names: Array[String] = []
+	var seen := {}
+	for node in _collect_all_nodes():
+		for group_name in node.get_groups():
+			var name := String(group_name)
+			if seen.has(name):
+				continue
+			seen[name] = true
+			names.append(name)
+	names.sort()
+	return names
 
 
 func _process_pick_mode() -> void:
@@ -523,6 +950,195 @@ func _refresh_pick_controls() -> void:
 		_pick_hint_label.text = "Pick Mode  |  Left click selects  |  Right click or Esc cancels  |  Space freeze %s  |  %s" % [freeze_text, target_text]
 
 
+func _refresh_breadcrumbs() -> void:
+	var node := _get_selected_node()
+	_populate_breadcrumb_container(_hierarchy_breadcrumbs, node)
+	_populate_breadcrumb_container(_inspector_breadcrumbs, node)
+
+
+func _populate_breadcrumb_container(container: HFlowContainer, node: Node) -> void:
+	if container == null:
+		return
+	for child in container.get_children():
+		child.queue_free()
+
+	if node == null:
+		var empty_label := Label.new()
+		empty_label.text = "No selection"
+		empty_label.modulate = Color(1.0, 1.0, 1.0, 0.55)
+		container.add_child(empty_label)
+		return
+
+	var chain: Array[Node] = []
+	var cursor := node
+	while cursor != null:
+		chain.insert(0, cursor)
+		cursor = cursor.get_parent()
+
+	for index in range(chain.size()):
+		var chain_node := chain[index]
+		var button := Button.new()
+		button.text = "/root" if chain_node == get_tree().root else chain_node.name
+		button.custom_minimum_size = Vector2(0.0, 26.0)
+		button.pressed.connect(_on_breadcrumb_pressed.bind(_absolute_node_path(chain_node)))
+		container.add_child(button)
+		if index < chain.size() - 1:
+			var divider := Label.new()
+			divider.text = ">"
+			divider.modulate = Color(1.0, 1.0, 1.0, 0.40)
+			container.add_child(divider)
+
+
+func _refresh_resource_browser(rebuild_index: bool) -> void:
+	if _resource_list == null or _resource_detail == null:
+		return
+
+	if rebuild_index or not _resource_index_built:
+		var start_ms := Time.get_ticks_msec()
+		_resource_entries = ToolkitResourceBrowser.build_index("res://")
+		_resource_index_built = true
+		_log_event("Resource index rebuilt: %d entries in %d ms." % [_resource_entries.size(), Time.get_ticks_msec() - start_ms])
+
+	var filter_text := _resource_filter_edit.text.strip_edges() if _resource_filter_edit != null else ""
+	var type_filter := _resource_type_filter.get_item_text(max(_resource_type_filter.get_selected_id(), 0)) if _resource_type_filter != null else "All"
+	var previous_path := _selected_resource_path
+	_resource_list.clear()
+	for entry in _resource_entries:
+		if not ToolkitResourceBrowser.matches_filter(entry, filter_text, type_filter):
+			continue
+		var path := String(entry.get("path", ""))
+		var label := "[%s] %s" % [String(entry.get("kind", "")), path]
+		var index := _resource_list.get_item_count()
+		_resource_list.add_item(label)
+		_resource_list.set_item_metadata(index, path)
+
+	if previous_path != "":
+		for index in range(_resource_list.get_item_count()):
+			if String(_resource_list.get_item_metadata(index)) == previous_path:
+				_resource_list.select(index)
+				break
+
+	_refresh_resource_detail()
+
+
+func _refresh_resource_detail() -> void:
+	if _resource_detail == null:
+		return
+	if _selected_resource_path == "":
+		_resource_detail.clear()
+		_resource_detail.append_text("No resource selected.")
+		return
+
+	var description := ToolkitResourceBrowser.describe_path(_selected_resource_path)
+	var lines: Array[String] = []
+	lines.append("Path: %s" % _selected_resource_path)
+	lines.append("Kind: %s" % _value_or_placeholder(String(description.get("kind", ""))))
+	lines.append("Exists: %s" % _bool_string(bool(description.get("exists", false))))
+	lines.append("Cached: %s" % _bool_string(bool(description.get("cached", false))))
+	lines.append("Class: %s" % _value_or_placeholder(String(description.get("class_name", ""))))
+	lines.append("Script: %s" % _value_or_placeholder(String(description.get("script_path", ""))))
+	var size := int(description.get("size", -1))
+	if size >= 0:
+		lines.append("Size: %s" % _format_bytes(size))
+	var mtime := int(description.get("mtime", 0))
+	if mtime > 0:
+		lines.append("Modified: %s" % _format_unix_time(mtime))
+
+	var dependencies: Array = description.get("dependencies", [])
+	if not dependencies.is_empty():
+		lines.append("")
+		lines.append("Dependencies")
+		for dependency in dependencies.slice(0, 16):
+			lines.append("- %s" % String(dependency))
+		if dependencies.size() > 16:
+			lines.append("- ... (%d more)" % (dependencies.size() - 16))
+
+	var preview_text := String(description.get("preview_text", ""))
+	if preview_text != "":
+		lines.append("")
+		lines.append("Preview")
+		lines.append(preview_text)
+
+	var load_error := String(description.get("load_error", ""))
+	if load_error != "":
+		lines.append("")
+		lines.append("Load Error")
+		lines.append(load_error)
+
+	_resource_detail.clear()
+	_resource_detail.append_text("\n".join(lines))
+
+
+func _refresh_error_panel() -> void:
+	if _error_list == null or _error_report == null or _error_detail == null:
+		return
+
+	var data := ToolkitRuntimeErrors.collect()
+	_error_entries.clear()
+	for entry in _as_array(data.get("entries", [])):
+		if entry is Dictionary:
+			_error_entries.append(entry)
+	_error_report.clear()
+	_error_report.append_text(String(data.get("report", "")))
+
+	var previous_id := _selected_error_id
+	var filter_text := _error_filter_edit.text.strip_edges().to_lower() if _error_filter_edit != null else ""
+	_error_list.clear()
+	for entry in _error_entries:
+		var message := String(entry.get("message", ""))
+		var source := String(entry.get("source", ""))
+		var severity := String(entry.get("severity", ""))
+		var search := "%s %s %s" % [message.to_lower(), source.to_lower(), severity.to_lower()]
+		if filter_text != "" and not search.contains(filter_text):
+			continue
+		var label := "[%s] %s | %s" % [severity.to_upper(), source, message]
+		var index := _error_list.get_item_count()
+		_error_list.add_item(label)
+		_error_list.set_item_metadata(index, String(entry.get("id", "")))
+
+	if previous_id != "":
+		for index in range(_error_list.get_item_count()):
+			if String(_error_list.get_item_metadata(index)) == previous_id:
+				_error_list.select(index)
+				break
+
+	_refresh_error_detail()
+
+
+func _refresh_error_detail() -> void:
+	if _error_detail == null:
+		return
+	if _selected_error_id == "":
+		_error_detail.clear()
+		_error_detail.append_text("No runtime alert selected.")
+		return
+
+	for entry in _error_entries:
+		if String(entry.get("id", "")) == _selected_error_id:
+			_error_detail.clear()
+			_error_detail.append_text(ToolkitRuntimeErrors.build_detail(entry))
+			return
+
+	_error_detail.clear()
+	_error_detail.append_text("Selected runtime alert was not found.")
+
+
+func _refresh_gizmo_controls() -> void:
+	var has_node3d := _get_selected_node() is Node3D
+	if _gizmo_toggle_button != null:
+		_gizmo_toggle_button.text = "Stop Gizmo" if _gizmo_enabled else "Start Gizmo"
+		_gizmo_toggle_button.disabled = not has_node3d and not _gizmo_enabled
+	if _gizmo_mode_option != null:
+		_gizmo_mode_option.disabled = not has_node3d and not _gizmo_enabled
+	if _gizmo_local_check != null:
+		_gizmo_local_check.disabled = not has_node3d and not _gizmo_enabled
+
+	if _gizmo_overlay != null:
+		_gizmo_overlay.set_mode(_current_gizmo_mode())
+		_gizmo_overlay.set_local_space(_gizmo_local_check == null or _gizmo_local_check.button_pressed)
+		_gizmo_overlay.set_target(_get_selected_node())
+
+
 func _pick_node_label(node: Node) -> String:
 	if node == null:
 		return "<none>"
@@ -601,6 +1217,8 @@ func _toggle_overlay() -> void:
 	if _backdrop != null:
 		_backdrop.visible = _panel.visible
 	_refresh_accumulator = 0.0
+	if not _panel.visible and _command_palette_open:
+		_set_command_palette_open(false)
 	if not _panel.visible and _preview_viewport != null and _preview_viewport.has_method("release_pointer_capture"):
 		_preview_viewport.call("release_pointer_capture")
 
@@ -662,15 +1280,20 @@ func _refresh_all_views(log_it: bool) -> void:
 	_refresh_overview_report()
 	_rebuild_hierarchy_tree()
 	_refresh_inspector()
+	_refresh_breadcrumbs()
+	if _resource_index_built or (_tabs != null and _tabs.current_tab == TAB_RESOURCES):
+		_refresh_resource_browser(false)
 	_refresh_world_controls()
 	_refresh_file_list()
 	_refresh_runtime_controls()
+	_refresh_error_panel()
 	_refresh_diagnostics_view()
 	_refresh_groups_view()
 	_refresh_watch_view()
 	_refresh_log_view()
 	_refresh_transaction_views()
 	_refresh_pick_controls()
+	_refresh_gizmo_controls()
 
 	if log_it:
 		_log_event("Manual refresh completed.")
@@ -686,6 +1309,8 @@ func _refresh_dynamic_views() -> void:
 		_refresh_file_preview()
 	if _tabs == null or _tabs.current_tab != TAB_RUNTIME:
 		_refresh_runtime_controls()
+	if _tabs != null and _tabs.current_tab == TAB_ERRORS:
+		_refresh_error_panel()
 	if _tabs != null and _tabs.current_tab == TAB_DIAGNOSTICS:
 		_refresh_diagnostics_view()
 	_refresh_groups_view()
@@ -975,6 +1600,7 @@ func _refresh_inspector() -> void:
 		_inspector_path_edit.text = _selected_node_path
 	_refresh_property_tree(node)
 	_refresh_inspector_dynamic()
+	_refresh_breadcrumbs()
 
 
 func _refresh_inspector_dynamic() -> void:
@@ -990,6 +1616,7 @@ func _refresh_inspector_dynamic() -> void:
 		if _resource_meta != null:
 			_resource_meta.clear()
 			_resource_meta.append_text("No property/resource selection.")
+		_refresh_breadcrumbs()
 		_refresh_property_action_buttons(null)
 		return
 
@@ -1021,6 +1648,7 @@ func _refresh_inspector_dynamic() -> void:
 
 	_refresh_property_watch_panel(node)
 	_refresh_resource_meta(node)
+	_refresh_breadcrumbs()
 	_refresh_property_action_buttons(node)
 
 
@@ -1973,6 +2601,7 @@ func _refresh_world_controls() -> void:
 		_world_visible_check.button_pressed = false
 		_world_jump_path_edit.text = ""
 		_world_reparent_path_edit.text = ""
+		_refresh_gizmo_controls()
 		return
 
 	_world_name_edit.text = node.name
@@ -1980,6 +2609,7 @@ func _refresh_world_controls() -> void:
 	_world_jump_path_edit.text = _absolute_node_path(node)
 	_world_reparent_path_edit.text = _absolute_node_path(node.get_parent()) if node.get_parent() != null else ""
 	_pull_transform_from_node(node)
+	_refresh_gizmo_controls()
 
 
 func _pull_transform_from_node(node: Node) -> void:
@@ -3312,6 +3942,8 @@ func _set_selected_node(node: Node) -> void:
 	_refresh_groups_view()
 	_refresh_watch_view()
 	_refresh_pick_controls()
+	_refresh_breadcrumbs()
+	_refresh_gizmo_controls()
 
 	if node != null:
 		_push_selection_history(_selected_node_path)
@@ -4818,3 +5450,182 @@ func _on_history_item_selected(index: int) -> void:
 func _on_history_item_activated(index: int) -> void:
 	_on_history_item_selected(index)
 	_tabs.current_tab = TAB_INSPECTOR
+
+
+func _on_breadcrumb_pressed(path: String) -> void:
+	_select_path(path)
+
+
+func _on_refresh_resources_pressed() -> void:
+	_refresh_resource_browser(true)
+	_tabs.current_tab = TAB_RESOURCES
+	_set_status("Resource index refreshed.")
+
+
+func _on_resource_selected(index: int) -> void:
+	if _resource_list == null:
+		return
+	_selected_resource_path = String(_resource_list.get_item_metadata(index))
+	_refresh_resource_detail()
+	_set_status("Selected resource %s." % _selected_resource_path)
+
+
+func _on_resource_activated(index: int) -> void:
+	_on_resource_selected(index)
+	_on_preview_resource_pressed()
+
+
+func _on_preview_resource_pressed() -> void:
+	if _selected_resource_path == "":
+		_set_status("No resource selected.")
+		return
+	var description := ToolkitResourceBrowser.describe_path(_selected_resource_path)
+	var resource = description.get("resource")
+	if resource == null and ResourceLoader.exists(_selected_resource_path):
+		resource = load(_selected_resource_path)
+	if resource == null:
+		_set_status("Selected resource could not be loaded.")
+		return
+	_tabs.current_tab = TAB_PREVIEW
+	_load_preview_source(resource, _selected_resource_path, _selected_resource_path)
+	_set_status("Previewing resource %s." % _selected_resource_path.get_file())
+
+
+func _on_copy_resource_path_pressed() -> void:
+	if _selected_resource_path == "":
+		_set_status("No resource selected.")
+		return
+	DisplayServer.clipboard_set(_selected_resource_path)
+	_set_status("Copied resource path.")
+
+
+func _on_refresh_errors_pressed() -> void:
+	_refresh_error_panel()
+	_tabs.current_tab = TAB_ERRORS
+	_set_status("Runtime error panel refreshed.")
+
+
+func _on_error_selected(index: int) -> void:
+	if _error_list == null:
+		return
+	_selected_error_id = String(_error_list.get_item_metadata(index))
+	_refresh_error_detail()
+	_set_status("Selected runtime alert.")
+
+
+func _on_copy_errors_report_pressed() -> void:
+	if _error_report == null:
+		_set_status("Error summary is unavailable.")
+		return
+	DisplayServer.clipboard_set(_error_report.get_parsed_text())
+	_set_status("Copied runtime error summary.")
+
+
+func _on_copy_selected_error_pressed() -> void:
+	if _selected_error_id == "":
+		_set_status("No runtime alert selected.")
+		return
+	for entry in _error_entries:
+		if String(entry.get("id", "")) == _selected_error_id:
+			DisplayServer.clipboard_set(ToolkitRuntimeErrors.build_detail(entry))
+			_set_status("Copied selected runtime alert.")
+			return
+	_set_status("Selected runtime alert was not found.")
+
+
+func _on_open_diagnostics_pressed() -> void:
+	_tabs.current_tab = TAB_DIAGNOSTICS
+	_set_status("Opened Diagnostics tab.")
+
+
+func _current_gizmo_mode() -> String:
+	if _gizmo_mode_option == null:
+		return "move"
+	match _gizmo_mode_option.get_selected_id():
+		1:
+			return "rotate"
+		2:
+			return "scale"
+		_:
+			return "move"
+
+
+func _set_gizmo_enabled(enabled: bool, reopen_panel: bool = true) -> void:
+	if enabled and not (_get_selected_node() is Node3D):
+		_set_status("Transform gizmo requires a Node3D selection.")
+		return
+
+	_gizmo_enabled = enabled
+	if _gizmo_overlay != null:
+		_gizmo_overlay.set_mode(_current_gizmo_mode())
+		_gizmo_overlay.set_local_space(_gizmo_local_check == null or _gizmo_local_check.button_pressed)
+		_gizmo_overlay.set_target(_get_selected_node())
+		_gizmo_overlay.set_active(enabled)
+
+	if enabled:
+		if _pick_enabled:
+			_set_pick_mode(false, false)
+		if _command_palette_open:
+			_set_command_palette_open(false)
+		if _preview_viewport != null and _preview_viewport.has_method("release_pointer_capture"):
+			_preview_viewport.call("release_pointer_capture")
+		if _backdrop != null:
+			_backdrop.visible = false
+		_panel.visible = false
+		_show_cursor_for_overlay(true)
+		_log_event("Transform gizmo enabled.")
+		_set_status("Transform gizmo enabled. Esc closes it.")
+	else:
+		if _gizmo_overlay != null:
+			_gizmo_overlay.release_drag()
+		if reopen_panel:
+			_panel.visible = true
+			if _backdrop != null:
+				_backdrop.visible = true
+			_apply_saved_window_geometry()
+			_panel.grab_focus()
+			_refresh_all_views(false)
+		elif not _is_menu_scene():
+			_show_cursor_for_overlay(false)
+		_log_event("Transform gizmo disabled.")
+
+	_refresh_gizmo_controls()
+
+
+func _on_gizmo_toggle_pressed() -> void:
+	_set_gizmo_enabled(not _gizmo_enabled)
+
+
+func _on_gizmo_mode_selected(_index: int) -> void:
+	if _gizmo_overlay != null:
+		_gizmo_overlay.set_mode(_current_gizmo_mode())
+	_set_status("Gizmo mode = %s." % _current_gizmo_mode())
+
+
+func _on_gizmo_local_toggled(enabled: bool) -> void:
+	if _gizmo_overlay != null:
+		_gizmo_overlay.set_local_space(enabled)
+	_set_status("Gizmo space = %s." % ("local" if enabled else "world"))
+
+
+func _on_gizmo_frame_pressed() -> void:
+	if not (_get_selected_node() is Node3D):
+		_set_status("No Node3D selected for preview framing.")
+		return
+	_tabs.current_tab = TAB_PREVIEW
+	_load_preview_from_selected_node()
+	_on_preview_frame_pressed()
+	_set_status("Framed selected target in preview.")
+
+
+func _on_gizmo_status_changed(text: String) -> void:
+	_set_status(text)
+
+
+func _on_gizmo_transform_committed(node: Node3D, old_state: Dictionary, new_state: Dictionary) -> void:
+	if node == null:
+		return
+	_record_transform_transaction(node, old_state, new_state)
+	_refresh_world_controls()
+	_refresh_inspector_dynamic()
+	_log_event("Gizmo committed transform on %s." % _absolute_node_path(node))

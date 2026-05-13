@@ -11,9 +11,11 @@ static func build_tabs(host, tabs: TabContainer) -> void:
 	_add_tab(tabs, "Search", _build_search_tab(host))
 	_add_tab(tabs, "Inspector", _build_inspector_tab(host))
 	_add_tab(tabs, "Preview", _build_preview_tab(host))
+	_add_tab(tabs, "Resources", _build_resources_tab(host))
 	_add_tab(tabs, "World Edit", _build_world_tab(host))
 	_add_tab(tabs, "Files", _build_files_tab(host))
 	_add_tab(tabs, "Runtime", _build_runtime_tab(host))
+	_add_tab(tabs, "Errors", _build_errors_tab(host))
 	_add_tab(tabs, "Diagnostics", _build_diagnostics_tab(host))
 	_add_tab(tabs, "Groups", _build_groups_tab(host))
 	_add_tab(tabs, "Watch", _build_watch_tab(host))
@@ -137,6 +139,13 @@ static func _build_hierarchy_tab(host) -> Control:
 	split.add_child(side_column)
 
 	side_column.add_child(_make_panel_shell("Selection", host._hierarchy_path_label))
+
+	host._hierarchy_breadcrumbs = HFlowContainer.new()
+	host._hierarchy_breadcrumbs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	host._hierarchy_breadcrumbs.add_theme_constant_override("h_separation", 6)
+	host._hierarchy_breadcrumbs.add_theme_constant_override("v_separation", 6)
+	side_column.add_child(_make_panel_shell("Breadcrumbs", host._hierarchy_breadcrumbs))
+
 	side_column.add_child(_make_panel_shell("Pick Target", host._pick_target_label))
 
 	var hint_label := Label.new()
@@ -218,6 +227,12 @@ static func _build_inspector_tab(host) -> Control:
 	row1.add_child(_make_button("Copy Path", Callable(host, "_on_copy_selected_path_pressed")))
 	row1.add_child(_make_button("Select Parent", Callable(host, "_on_select_parent_pressed")))
 	row1.add_child(_make_button("Select Scene", Callable(host, "_on_select_scene_root_pressed")))
+
+	host._inspector_breadcrumbs = HFlowContainer.new()
+	host._inspector_breadcrumbs.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	host._inspector_breadcrumbs.add_theme_constant_override("h_separation", 6)
+	host._inspector_breadcrumbs.add_theme_constant_override("v_separation", 6)
+	root.add_child(_make_panel_shell("Selection Breadcrumbs", host._inspector_breadcrumbs))
 
 	var row2 := HBoxContainer.new()
 	row2.add_theme_constant_override("separation", 6)
@@ -403,6 +418,27 @@ static func _build_world_tab(host) -> Control:
 	selected_row.add_child(host._world_selected_path_edit)
 	selected_row.add_child(_make_button("Copy Path", Callable(host, "_on_copy_selected_path_pressed")))
 	selected_row.add_child(_make_button("Pull Selected", Callable(host, "_on_pull_transform_pressed")))
+
+	var gizmo_row := _make_action_flow()
+	root.add_child(gizmo_row)
+
+	host._gizmo_toggle_button = _make_button("Start Gizmo", Callable(host, "_on_gizmo_toggle_pressed"))
+	gizmo_row.add_child(host._gizmo_toggle_button)
+
+	host._gizmo_mode_option = OptionButton.new()
+	host._gizmo_mode_option.add_item("Move", 0)
+	host._gizmo_mode_option.add_item("Rotate", 1)
+	host._gizmo_mode_option.add_item("Scale", 2)
+	host._gizmo_mode_option.item_selected.connect(Callable(host, "_on_gizmo_mode_selected"))
+	gizmo_row.add_child(host._gizmo_mode_option)
+
+	host._gizmo_local_check = CheckBox.new()
+	host._gizmo_local_check.text = "Local Space"
+	host._gizmo_local_check.button_pressed = true
+	host._gizmo_local_check.toggled.connect(Callable(host, "_on_gizmo_local_toggled"))
+	gizmo_row.add_child(host._gizmo_local_check)
+
+	gizmo_row.add_child(_make_button("Frame Target", Callable(host, "_on_gizmo_frame_pressed")))
 
 	var jump_row := HBoxContainer.new()
 	jump_row.add_theme_constant_override("separation", 6)
@@ -655,6 +691,57 @@ static func _build_preview_tab(host) -> Control:
 	return root
 
 
+static func _build_resources_tab(host) -> Control:
+	var root := VBoxContainer.new()
+	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	root.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	root.add_theme_constant_override("separation", 8)
+
+	var action_row := _make_action_flow()
+	root.add_child(action_row)
+	action_row.add_child(_make_button("Refresh Index", Callable(host, "_on_refresh_resources_pressed")))
+	action_row.add_child(_make_button("Preview Resource", Callable(host, "_on_preview_resource_pressed")))
+	action_row.add_child(_make_button("Copy Path", Callable(host, "_on_copy_resource_path_pressed")))
+	action_row.add_child(_make_button("Use In Preview", Callable(host, "_on_preview_resource_pressed")))
+
+	var filter_row := HBoxContainer.new()
+	filter_row.add_theme_constant_override("separation", 6)
+	root.add_child(filter_row)
+
+	host._resource_filter_edit = LineEdit.new()
+	host._resource_filter_edit.placeholder_text = "Filter res:// resources..."
+	host._resource_filter_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	host._resource_filter_edit.text_changed.connect(func(_text: String) -> void: host._refresh_resource_browser(false))
+	filter_row.add_child(host._resource_filter_edit)
+
+	host._resource_type_filter = OptionButton.new()
+	for label in ["All", "Scenes", "Resources", "Textures", "Meshes", "Materials", "Scripts", "Shaders"]:
+		host._resource_type_filter.add_item(label)
+	host._resource_type_filter.item_selected.connect(func(_index: int) -> void: host._refresh_resource_browser(false))
+	filter_row.add_child(host._resource_type_filter)
+
+	var split := _make_horizontal_split(420)
+	root.add_child(split)
+
+	host._resource_list = ItemList.new()
+	host._resource_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	host._resource_list.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	host._resource_list.item_selected.connect(Callable(host, "_on_resource_selected"))
+	host._resource_list.item_activated.connect(Callable(host, "_on_resource_activated"))
+	split.add_child(_make_panel_shell("res:// Resources", host._resource_list))
+
+	host._resource_detail = RichTextLabel.new()
+	host._resource_detail.bbcode_enabled = false
+	host._resource_detail.fit_content = false
+	host._resource_detail.scroll_active = true
+	host._resource_detail.selection_enabled = true
+	host._resource_detail.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	host._resource_detail.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	split.add_child(_make_panel_shell("Resource Detail", host._resource_detail))
+
+	return root
+
+
 static func _build_files_tab(host) -> Control:
 	var root := VBoxContainer.new()
 	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -796,6 +883,62 @@ static func _build_runtime_tab(host) -> Control:
 	host._game_compatibility_check = CheckBox.new()
 	host._game_compatibility_check.text = "compatibility"
 	game_row.add_child(host._game_compatibility_check)
+
+	return root
+
+
+static func _build_errors_tab(host) -> Control:
+	var root := VBoxContainer.new()
+	root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	root.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	root.add_theme_constant_override("separation", 8)
+
+	var action_row := _make_action_flow()
+	root.add_child(action_row)
+	action_row.add_child(_make_button("Refresh Errors", Callable(host, "_on_refresh_errors_pressed")))
+	action_row.add_child(_make_button("Copy Report", Callable(host, "_on_copy_errors_report_pressed")))
+	action_row.add_child(_make_button("Copy Selected", Callable(host, "_on_copy_selected_error_pressed")))
+	action_row.add_child(_make_button("Open Diagnostics", Callable(host, "_on_open_diagnostics_pressed")))
+
+	var filter_row := HBoxContainer.new()
+	filter_row.add_theme_constant_override("separation", 6)
+	root.add_child(filter_row)
+
+	host._error_filter_edit = LineEdit.new()
+	host._error_filter_edit.placeholder_text = "Filter runtime alerts..."
+	host._error_filter_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	host._error_filter_edit.text_changed.connect(func(_text: String) -> void: host._refresh_error_panel())
+	filter_row.add_child(host._error_filter_edit)
+
+	var split := _make_horizontal_split(350)
+	root.add_child(split)
+
+	host._error_list = ItemList.new()
+	host._error_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	host._error_list.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	host._error_list.item_selected.connect(Callable(host, "_on_error_selected"))
+	split.add_child(_make_panel_shell("Runtime Alerts", host._error_list))
+
+	var right := _make_vertical_split(240)
+	split.add_child(right)
+
+	host._error_report = RichTextLabel.new()
+	host._error_report.bbcode_enabled = false
+	host._error_report.fit_content = false
+	host._error_report.scroll_active = true
+	host._error_report.selection_enabled = true
+	host._error_report.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	host._error_report.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	right.add_child(_make_panel_shell("Error Summary", host._error_report))
+
+	host._error_detail = RichTextLabel.new()
+	host._error_detail.bbcode_enabled = false
+	host._error_detail.fit_content = false
+	host._error_detail.scroll_active = true
+	host._error_detail.selection_enabled = true
+	host._error_detail.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	host._error_detail.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	right.add_child(_make_panel_shell("Error Detail", host._error_detail))
 
 	return root
 
